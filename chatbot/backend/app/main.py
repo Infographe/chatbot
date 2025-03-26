@@ -1,8 +1,19 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 
 app = FastAPI()
+
+# Autoriser le frontend Angular à communiquer avec l’API FastAPI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4200"],  # Port Angular
+    allow_credentials=True,
+    allow_methods=["*"],  # Autoriser POST, GET, OPTIONS etc.
+    allow_headers=["*"],  # Autoriser tous les headers
+)
+
 
 # Schéma de la requête (entrée)
 class QueryRequest(BaseModel):

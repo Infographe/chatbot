@@ -83,3 +83,6 @@ Aucune étape de nettoyage, découpage ou enrichissement supplémentaire n’est
 
 👉 Il suffit de charger les chunks ou la base Chroma pour démarrer le développement LLM.
 
+## Commandes
+
+Lancer le serveur => ./start_api.sh
