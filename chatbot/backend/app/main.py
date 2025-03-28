@@ -5,10 +5,9 @@ from typing import List, Optional
 import json
 from pathlib import Path
 
-# Initialisation de FastAPI
 app = FastAPI()
 
-# ✅ Configuration CORS pour permettre les requêtes depuis le frontend Angular
+# Configuration CORS pour autoriser Angular
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:4200"],
@@ -17,15 +16,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Chargement des formations depuis des fichiers JSON
+# Chargement des formations JSON
 json_dir = Path("content/json_clean/formations")
-formations = [json.load(open(file, "r")) for file in json_dir.glob("*.json")]
+formations = []
+try:
+    for file in json_dir.glob("*.json"):
+        with open(file, "r") as f:
+            data = json.load(f)
+            formations.append(data)
+except Exception as e:
+    print(f"[ERREUR] Impossible de charger les formations : {e}")
 
-# --------------------------
-# ✅ Schémas de données pour l'application
-# --------------------------
+# -------------------------------------
+# Modèles
+# -------------------------------------
 
-# Modèle du profil utilisateur
 class UserProfile(BaseModel):
     nom: str
     situation_actuelle: str
@@ -34,98 +39,70 @@ class UserProfile(BaseModel):
     connaissances: List[str]
     attentes: str
 
-# Message contextuel pour historique conversationnel
 class MessageContext(BaseModel):
-    sender: str  # "Utilisateur" ou "Assistant"
+    sender: str
     text: str
 
-# Modèle de requête enrichi côté Angular avec prompt, rôle et contexte
 class ChatContext(BaseModel):
     prompt: str
     role: Optional[str] = "user"
-    context: Optional[str] = None  # Contexte conversationnel (historique enrichi)
+    context: Optional[str] = None
 
-# Modèle de réponse renvoyée par l'API après traitement du contexte
 class ChatContextResponse(BaseModel):
     response: str
     source_documents: Optional[List[str]] = None
 
-# Modèle de réponse pour la recommandation de formation
 class RecommendationResponse(BaseModel):
     recommandation: str
     details: Optional[dict] = None
     formation_link: Optional[str] = None
     message: Optional[str] = None
 
-# --------------------------
-# ✅ Endpoint principal pour traitement des requêtes du chatbot
-# --------------------------
+# -------------------------------------
+# Endpoint principal /query
+# -------------------------------------
 @app.post("/query", response_model=ChatContextResponse)
 def query(chat: ChatContext):
-    # Extraction des données envoyées par Angular
+    """
+    Reçoit un 'prompt', un 'role' et un 'context' (historique + profil).
+    Retourne une réponse simulée pour le moment.
+    """
     prompt = chat.prompt
     role = chat.role
     context = chat.context
 
-    # 🖥️ Affichage dans la console du contexte reçu pour débogage ou validation
-    print(f"\n📌 Contexte reçu depuis Angular :\n{context}\n")
+    # Log du contexte reçu
+    print("\n[DEBUG] /query - Contexte reçu :")
+    print(context)
 
-    # ✅ À cet endroit Mohammed peut intégrer directement le modèle LLM/RAG
-    # par exemple : llm.generate(prompt, context)
-
-    # Réponse temporaire simulée en attendant l'intégration finale
-    fake_response = f"Réponse simulée tenant compte du contexte pour : '{prompt}'"
+    # Simulation d'une réponse (Mohammed branchera son LLM ici)
+    fake_response = f"Réponse simulée pour : '{prompt}' (role={role}), tenant compte du contexte."
     fake_sources = [
-        "content/json_clean/formations/Formation_Python_Data_Visualisation.json",
-        "content/json_clean/formations/Formation_Power_BI.json"
+        "Formation_Python_Data_Visualisation.json",
+        "Formation_Power_BI.json"
     ]
 
-    # Retourner la réponse simulée
-    return ChatContextResponse(
-        response=fake_response,
-        source_documents=fake_sources
-    )
+    return ChatContextResponse(response=fake_response, source_documents=fake_sources)
 
-# --------------------------
-# ✅ Logique avancée d'analyse et enrichissement du contexte conversationnel
-# --------------------------
-def enrichir_reponse_avec_contexte(prompt: str, context: Optional[List[MessageContext]]) -> str:
-    """
-    ⚙️ Fonction simulant une logique avancée qui intègre le contexte conversationnel
-    au prompt avant de l'envoyer au modèle LLM/RAG.
-    """
+# -------------------------------------
+# Logique de Recommandation
+# -------------------------------------
 
-    # Construction du contexte historique à partir des échanges précédents
-    if context:
-        historique = "\n".join([f"{msg.sender}: {msg.text}" for msg in context])
-        contexte_final = f"Historique conversationnel:\n{historique}\n\nQuestion actuelle: {prompt}"
-    else:
-        contexte_final = prompt
-
-    # 🖨️ Affichage du contexte enrichi dans la console pour validation
-    print("[🧠 Contexte enrichi pour le LLM]", contexte_final)
-
-    # Retourne une réponse simulée enrichie avec le contexte
-    return f"Voici une réponse contextualisée simulée pour : '{prompt}', tenant compte de l'historique."
-
-# --------------------------
-# ✅ Endpoint pour recommander une formation en fonction du profil utilisateur
-# --------------------------
 @app.post("/recommend", response_model=RecommendationResponse)
 def recommend(profile: UserProfile):
-    # Extraction des critères utilisateur depuis son profil
+    """
+    Reçoit un profil utilisateur (POST),
+    et renvoie la formation la plus adaptée ou un fallback.
+    """
     criteres = extraire_criteres(profile)
-
-    # Recherche d'une formation adaptée selon les critères du profil
     formation = match_formation(criteres, formations)
 
-    # Vérification si une formation adaptée est trouvée
     if formation:
         return RecommendationResponse(
             recommandation=formation["titre"],
             details={
-                "objectifs": formation.get("objectifs"),
-                "public": formation.get("public")
+                "objectifs": formation.get("objectifs", []),
+                "public": formation.get("public", [])
             },
             formation_link=formation.get("lien", "#")
         )
@@ -136,21 +113,24 @@ def recommend(profile: UserProfile):
             formation_link=None
         )
 
-# --------------------------
-# ✅ Fonctions utilitaires pour l'analyse et la recommandation de formations
-# --------------------------
-def extraire_criteres(profil: UserProfile):
-    """
-    🛠️ Extrait les critères pertinents du profil utilisateur pour faciliter
-    le matching avec les formations disponibles.
-    """
 
+# -------------------------------------
+# Fonctions utilitaires
+# -------------------------------------
+
+def extraire_criteres(profil: UserProfile) -> dict:
+    """
+    Extrait les critères utiles du profil :
+     - objectifs
+     - compétences (niveau + connaissances)
+     - public
+    """
     objectifs = [profil.objectif] + profil.attentes.split(",")
-    objectifs = [o.strip() for o in objectifs]  # Nettoyage des objectifs
+    objectifs = [o.strip().lower() for o in objectifs]
 
-    competences = [profil.niveau_actuel] + profil.connaissances
+    competences = [profil.niveau_actuel.lower()] + [c.lower() for c in profil.connaissances]
 
-    # Ciblage spécifique selon la situation actuelle (simplifié ici)
+    # Public 'étudiants' ou 'tout public'
     public = ["étudiants"] if "étudiant" in profil.situation_actuelle.lower() else ["tout public"]
 
     return {
@@ -159,15 +139,20 @@ def extraire_criteres(profil: UserProfile):
         "public": public
     }
 
-def match_formation(criteres, formations):
+def match_formation(criteres: dict, formations: list) -> Optional[dict]:
     """
-    🔍 Cherche parmi les formations disponibles une correspondance avec les critères.
-    Retourne la première formation adaptée trouvée.
+    Recherche la première formation qui correspond
+    aux objectifs, prérequis ou public.
     """
-
     for formation in formations:
-        if any(obj in formation.get("objectifs", []) for obj in criteres["objectifs"]) or \
-           any(comp in formation.get("prerequis", []) for comp in criteres["competences"]) or \
-           any(p in formation.get("public", []) for p in criteres["public"]):
+        # On fait un to-lower sur la formation pour comparer
+        formation_objectifs = [obj.lower() for obj in formation.get("objectifs", [])]
+        formation_prerequis = [pr.lower() for pr in formation.get("prerequis", [])]
+        formation_public = [p.lower() for p in formation.get("public", [])]
+
+        # Condition de match
+        if any(obj in formation_objectifs for obj in criteres["objectifs"]) \
+           or any(comp in formation_prerequis for comp in criteres["competences"]) \
+           or any(pub in formation_public for pub in criteres["public"]):
             return formation
     return None
