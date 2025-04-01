@@ -142,7 +142,7 @@ def extract_keywords(objective: str, knowledge: str) -> List[str]:
     return unique_tokens
 
 
-def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: str, seuil_score: int = 2) -> pd.DataFrame:
+def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: str, seuil_score: int = 5) -> pd.DataFrame:
     """
     Filtre et trie les formations en fonction de :
       - correspondances avec les mots-clés
