@@ -142,59 +142,73 @@ def extract_keywords(objective: str, knowledge: str) -> List[str]:
     return unique_tokens
 
 
-def partial_match_formations(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
+def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: str, seuil_score: int = 2) -> pd.DataFrame:
     """
-    Évalue chaque formation en fonction du nombre de correspondances partielles avec les mots-clés fournis.
-    Retourne les formations triées par score décroissant.
+    Filtre et trie les formations en fonction de :
+      - correspondances avec les mots-clés
+      - niveau de l'utilisateur (bonus/malus)
+      - score total >= seuil minimal
 
-    :param df: DataFrame contenant les formations
-    :param tokens: Liste de mots-clés extraits du profil utilisateur
-    :return: DataFrame trié par pertinence (score décroissant)
+    :param df: DataFrame des formations
+    :param tokens: mots-clés extraits du profil
+    :param niveau_user: 'débutant', 'intermédiaire' ou 'avancé'
+    :param seuil_score: score minimal requis pour être considéré
+    :return: formations triées par pertinence
+
+    Exemple :
+        Les formations trop faibles (score < 2) sont ignorées
+        Les débutants sont orientés vers des formations plus accessibles
+        Les profils avancés obtiennent des contenus plus techniques 
     """
+    print("\n[DEBUG] partial_match_formations()")
+    print(f"[DEBUG] Niveau utilisateur : {niveau_user}")
+    print(f"[DEBUG] Tokens utilisés : {tokens}")
 
-    print("\n[DEBUG] Début du matching")
-    print(f"[DEBUG] Nombre de formations à évaluer : {len(df)}")
-    print(f"[DEBUG] Tokens utilisateur : {tokens}")
-
-    # Si aucun token ou DF vide, retour vide
     if df.empty or not tokens:
-        print("[WARNING] Aucun token ou DataFrame vide")
+        print("[WARNING] DF vide ou aucun token")
         return df.iloc[0:0]
 
     df = df.copy()
 
-    # Fusionne les champs objectifs, prerequis, programme dans une seule chaîne pour chaque ligne
+    # Crée un corpus global pour chaque formation
     df["corpus"] = df.apply(
         lambda row: " ".join(
-            str(item).lower() for sublist in [row.get("objectifs", []), row.get("prerequis", []), row.get("programme", [])]
-            for item in (sublist if isinstance(sublist, list) else [sublist])
+            str(x).lower() for lst in [row.get("objectifs", []), row.get("prerequis", []), row.get("programme", [])]
+            for x in (lst if isinstance(lst, list) else [lst])
         ),
         axis=1
     )
 
-    print("\n[DEBUG] Exemple de corpus (première formation) :")
-    if len(df) > 0:
-        print(df.iloc[0]["corpus"][:200], "...")  # Affiche un extrait pour éviter les débordements
+    # Ajoute une colonne "score" initiale
+    def compute_score(row):
+        text = row["corpus"]
+        score = sum(1 for t in tokens if t in text)
 
-    # Fonction de scoring : compte les tokens présents dans le corpus
-    def compute_score(text: str, tokens: List[str]) -> int:
-        score = 0
-        for token in tokens:
-            if token in text:
+        # Bonus selon le niveau utilisateur
+        niveau_formation = row.get("niveau", "").lower()
+        prerequis = row.get("prerequis", [])
+
+        # Bonus pour débutant : pas de prérequis ou niveau = débutant
+        if niveau_user == "débutant":
+            if not prerequis or "débutant" in niveau_formation:
+                score += 2
+        elif niveau_user == "avancé":
+            if "avancé" in niveau_formation:
                 score += 1
+
         return score
 
-    # Applique la fonction à chaque ligne
-    df["score"] = df["corpus"].apply(lambda text: compute_score(text, tokens))
+    df["score"] = df.apply(compute_score, axis=1)
 
-    print("\n[DEBUG] Scores calculés :")
+    print("\n[DEBUG] Scores détaillés :")
     print(df[["titre", "score"]].sort_values(by="score", ascending=False).to_string(index=False))
 
-    # Filtre uniquement les formations avec score > 0
-    matched = df[df["score"] > 0].sort_values(by="score", ascending=False)
+    # Ne garde que les formations qui dépassent un seuil minimum
+    filtered = df[df["score"] >= seuil_score].sort_values(by="score", ascending=False)
 
-    print(f"\n[DEBUG] Formations retenues après filtrage : {len(matched)}")
-    return matched
+    print(f"[DEBUG] Formations retenues après filtrage (seuil={seuil_score}) : {len(filtered)}")
+    return filtered
+
 
 
 
@@ -248,10 +262,21 @@ def recommend_endpoint(r: RecommendRequest):
     puis cherche une formation correspondante.
     Retourne une réponse structurée avec détails séparés.
     """
-    print("\n[DEBUG] /recommend => Profil =", r.profile)
+    profile = r.profile  # alias pour plus de clarté
 
-    tokens = extract_keywords(r.profile.objective, r.profile.knowledge)
-    matched_df = partial_match_formations(df_formations, tokens)
+    # Debug
+    # print(f"[DEBUG] /recommend => Profil = {profile}")
+
+    # Extraction des mots-clés à partir de l’objectif et des connaissances
+    tokens = extract_keywords(profile.objective, profile.knowledge)
+
+    # Récupération du niveau utilisateur en minuscule
+    niveau = profile.level.lower().strip()
+
+    # Matching dans les formations avec score et niveau pris en compte
+    matched_df = partial_match_formations(df_formations, tokens, niveau_user=niveau)
+
+
 
     if not matched_df.empty:
         match = matched_df.iloc[0]
@@ -272,6 +297,7 @@ def recommend_endpoint(r: RecommendRequest):
                 "lien": lien
             }
         )
+    # Si aucune formation ne correspond, on renvoie un message générique
     else:
         return RecommendResponse(
             recommended_course="Aucune formation pertinente",
