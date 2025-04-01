@@ -1,172 +1,208 @@
 """
 main.py
 
-Exemple d'API FastAPI utilisant pandas pour charger 
-des fichiers JSON de formations et effectuer un 
-"partial matching" sur l'objectif et les compétences 
-de l'utilisateur.
+Exemple d'API FastAPI + pandas, avec chargement de fichiers JSON 
+depuis le dossier "content", puis partial matching sur 
+l'objectif et les compétences de l'utilisateur.
 
-Endpoints:
-  - POST /recommend : reçoit un profil utilisateur, 
-    renvoie la formation la plus adaptée (ou "Aucune formation...").
-  - POST /query : simulation de conversation 
-    (réponse fictive).
+- POST /recommend : reçoit un profil, renvoie une formation adaptée ou un fallback.
+- POST /query : simulation de conversation (réponse fictive).
 
-Nécessite:
-  - fastapi, uvicorn, pydantic, pandas, openpyxl (en cas de manip xlsx), etc.
-  - un dossier content/json_clean/formations contenant plusieurs fichiers .json
-    au format:
-      {
-        "titre": "Formation Python Data",
-        "objectifs": ["Analyser des données", "Maîtriser Python"],
-        "prerequis": ["Python", "Bases de programmation"],
-        "public": ["tout public"],
-        "lien": "https://exemple.com/formation-python-data"
-      }
-
-Pour exécuter:
-  uvicorn main:app --reload
-Puis accéder aux endpoints via http://127.0.0.1:8000/docs
+Nécessite: fastapi, uvicorn, pandas, etc.
+Pour lancer:
+    uvicorn main:app --reload
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+
 import pandas as pd
 import json
 from pathlib import Path
 
-# ===========================
-# == Création de l'API    ==
-# ===========================
-
+# ===========================================
+# == Création de l'API FastAPI            ==
+# ===========================================
 app = FastAPI(
-    title="Chatbot Formation API (Pandas version)",
+    title="Chatbot Formation API (Pandas + dossier content)",
     version="1.0.0",
-    description="API de recommandation de formations utilisant pandas."
+    description="API de recommandation de formations utilisant pandas, avec chargement JSON depuis 'content'."
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"],  # Autorise le front Angular local
+    allow_origins=["http://localhost:4200"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =====================================
-# == Chargement des formations via DF ==
-# =====================================
+# ===========================================
+# == Détermination du chemin absolu         ==
+# ===========================================
+# L'objectif est de pointer vers le dossier "content" 
+# où se trouvent désormais tous les fichiers .json.
+
+CURRENT_FILE = Path(__file__).resolve()
+print("[DEBUG] __file__ =", __file__)
+print("[DEBUG] CURRENT_FILE =", CURRENT_FILE)
+
+# Supposons que main.py est dans 'app/' (ou la racine).
+# .parent => dossier contenant main.py
+# .parent.parent => si besoin de remonter un niveau supplémentaire
+# Ajuster selon l'emplacement réel :
+BASE_DIR = CURRENT_FILE.parent  # si main.py est à la racine, c'est suffisant
+# Si main.py est dans 'app/', alors => BASE_DIR = CURRENT_FILE.parent.parent
+# À adapter selon la hiérarchie exacte.
+
+print("[DEBUG] BASE_DIR =", BASE_DIR)
+
+DATA_FOLDER = BASE_DIR / "content"
+print("[DEBUG] DATA_FOLDER =", DATA_FOLDER, "| exists?", DATA_FOLDER.exists())
+
+# ============================================
+# == Chargement des formations en DataFrame ==
+# ============================================
 
 def load_formations_to_df(json_dir: Path) -> pd.DataFrame:
     """
-    Parcourt tous les fichiers *.json dans json_dir et construit 
-    un DataFrame contenant des colonnes : 
+    Parcourt tous les fichiers *.json dans 'json_dir',
+    et construit un DataFrame avec:
       - titre
       - objectifs (liste)
       - prerequis (liste)
+      - programme (liste)
       - public (liste)
       - lien
+    Ajoute des prints pour vérifier le contenu.
     """
+    print("\n[DEBUG] Chargement des formations depuis:", json_dir)
+    if not json_dir.exists():
+        print("[WARNING] Le dossier n'existe pas. Aucun fichier JSON ne sera chargé.")
+        return pd.DataFrame()
+
     records = []
+    nb_files = 0
+
     for file in json_dir.glob("*.json"):
+        nb_files += 1
+        print("[DEBUG] Ouverture du fichier:", file)
         with open(file, "r", encoding="utf-8") as f:
-            formation = json.load(f)
+            data = json.load(f)
             records.append({
-                "titre": formation.get("titre", ""),
-                "objectifs": formation.get("objectifs", []),
-                "prerequis": formation.get("prerequis", []),
-                "public": formation.get("public", []),
-                "lien": formation.get("lien", "")
+                "titre": data.get("titre", ""),
+                "objectifs": data.get("objectifs", []),
+                "prerequis": data.get("prerequis", []),
+                "programme": data.get("programme", []),
+                "public": data.get("public", []),
+                "lien": data.get("lien", "")
             })
-    if len(records) == 0:
-        # On retourne un DF vide si aucun fichier trouvé
-        return pd.DataFrame(columns=["titre", "objectifs", "prerequis", "public", "lien"])
-    return pd.DataFrame(records)
+        print("[DEBUG] Fichier chargé avec succès:", file.name)
 
-# Dossier contenant les JSON
-json_dir = Path("content/json_clean/formations")
-df_formations = load_formations_to_df(json_dir)
+    if nb_files == 0:
+        print("[WARNING] Aucun fichier .json trouvé dans le dossier.")
+        return pd.DataFrame()
 
+    df = pd.DataFrame(records)
+    print(f"[DEBUG] Nombre de formations chargées: {len(df)}")
+    return df
 
-# ======================================
-# == Décomposition champ user          ==
-# ======================================
+# Chargement effectif
+df_formations = load_formations_to_df(DATA_FOLDER)
+print("\n[DEBUG] df_formations:\n", df_formations)
+
+# ===========================================
+# == Fonctions utilitaires (matching)      ==
+# ===========================================
 
 def extract_keywords(objective: str, knowledge: str) -> List[str]:
     """
-    Sépare l'objectif et les compétences (knowledge) 
-    en une liste de mots-clés distincts.
-
-    Exemple:
-      objective = "Devenir Data Analyst"
-      knowledge = "python, sql"
-      => tokens = ["devenir", "data", "analyst", "python", "sql"]
+    Transforme l'objectif et les compétences en liste de mots-clés distincts,
+    tout en minuscules et sans doublons.
+    Ex: "Devenir Data Analyst" + "python, sql" => ["devenir", "data", "analyst", "python", "sql"]
+    Avec des prints pour le debug.
     """
-    # Mise en minuscules + remplacement de virgules par espaces
+    print("\n[DEBUG] Dans extract_keywords =>")
+    print(" - objective reçu:", objective)
+    print(" - knowledge reçu:", knowledge)
+
     obj_str = objective.lower().replace(",", " ")
     knw_str = knowledge.lower().replace(",", " ")
 
-    # Séparation par espaces
     obj_tokens = obj_str.split()
     knw_tokens = knw_str.split()
 
-    # Fusion
+    # Fusion + élimination de doublons
     all_tokens = obj_tokens + knw_tokens
+    unique_tokens = list(set(t.strip() for t in all_tokens if t.strip()))
 
-    # On supprime les éventuels doublons
-    unique_tokens = list(set(all_tokens))
-
-    # On retire les tokens vides (dans le cas où l'utilisateur laisse un champ vide)
-    unique_tokens = [t.strip() for t in unique_tokens if t.strip()]
+    print(" - Mots-clés extraits:", unique_tokens)
     return unique_tokens
 
-# ===========================================
-# == Fonctions de matching dans le DF      ==
-# ===========================================
 
 def partial_match_formations(df: pd.DataFrame, tokens: List[str]) -> pd.DataFrame:
     """
-    Filtre le DataFrame pour ne garder que les formations 
-    dont 'objectifs' ou 'prerequis' contiennent 
-    (en substring) au moins un des tokens donnés.
+    Évalue chaque formation en fonction du nombre de correspondances partielles avec les mots-clés fournis.
+    Retourne les formations triées par score décroissant.
 
-    :param df: Le DataFrame des formations
-    :param tokens: Liste de mots-clés en minuscules
-    :return: Sous-DataFrame des formations qui matchent
+    :param df: DataFrame contenant les formations
+    :param tokens: Liste de mots-clés extraits du profil utilisateur
+    :return: DataFrame trié par pertinence (score décroissant)
     """
+
+    print("\n[DEBUG] Début du matching")
+    print(f"[DEBUG] Nombre de formations à évaluer : {len(df)}")
+    print(f"[DEBUG] Tokens utilisateur : {tokens}")
+
+    # Si aucun token ou DF vide, retour vide
     if df.empty or not tokens:
-        return df.iloc[0:0]  # renvoie un df vide
+        print("[WARNING] Aucun token ou DataFrame vide")
+        return df.iloc[0:0]
 
-    # Création de colonnes string pour les comparaisons substring
-    # On regroupe les items (objectifs/prerequis) en une seule chaîne
     df = df.copy()
-    df["objectifs_str"] = df["objectifs"].apply(lambda lst: " ".join(str(x).lower() for x in lst))
-    df["prerequis_str"] = df["prerequis"].apply(lambda lst: " ".join(str(x).lower() for x in lst))
 
-    def row_matches(row) -> bool:
+    # Fusionne les champs objectifs, prerequis, programme dans une seule chaîne pour chaque ligne
+    df["corpus"] = df.apply(
+        lambda row: " ".join(
+            str(item).lower() for sublist in [row.get("objectifs", []), row.get("prerequis", []), row.get("programme", [])]
+            for item in (sublist if isinstance(sublist, list) else [sublist])
+        ),
+        axis=1
+    )
+
+    print("\n[DEBUG] Exemple de corpus (première formation) :")
+    if len(df) > 0:
+        print(df.iloc[0]["corpus"][:200], "...")  # Affiche un extrait pour éviter les débordements
+
+    # Fonction de scoring : compte les tokens présents dans le corpus
+    def compute_score(text: str, tokens: List[str]) -> int:
+        score = 0
         for token in tokens:
-            # partial matching => "python" in "maîtriser python"
-            if token in row["objectifs_str"] or token in row["prerequis_str"]:
-                return True
-        return False
+            if token in text:
+                score += 1
+        return score
 
-    mask = df.apply(row_matches, axis=1)
-    return df[mask]
+    # Applique la fonction à chaque ligne
+    df["score"] = df["corpus"].apply(lambda text: compute_score(text, tokens))
+
+    print("\n[DEBUG] Scores calculés :")
+    print(df[["titre", "score"]].sort_values(by="score", ascending=False).to_string(index=False))
+
+    # Filtre uniquement les formations avec score > 0
+    matched = df[df["score"] > 0].sort_values(by="score", ascending=False)
+
+    print(f"\n[DEBUG] Formations retenues après filtrage : {len(matched)}")
+    return matched
+
+
 
 # ===========================================
 # == Schémas Pydantic pour l'API           ==
 # ===========================================
 
 class UserProfile(BaseModel):
-    """
-    Représente le profil utilisateur :
-      - name : Nom
-      - objective : Objectif / but
-      - level : Niveau (ex: Débutant)
-      - knowledge : Compétences (champ texte)
-    """
     name: str
     objective: str
     level: str
@@ -174,79 +210,72 @@ class UserProfile(BaseModel):
     recommended_course: Optional[str] = None
 
 class RecommendRequest(BaseModel):
-    """
-    Requête pour l'endpoint /recommend
-    """
     profile: UserProfile
 
 class RecommendResponse(BaseModel):
-    """
-    Réponse renvoyée par /recommend
-    """
     recommended_course: str
     reply: str
 
 class QueryRequest(BaseModel):
-    """
-    Requête pour l'endpoint /query
-    (pas de logique LLM réelle ici, simple placeholder)
-    """
     profile: UserProfile
     history: List[dict] = []
     question: str
 
 class QueryResponse(BaseModel):
-    """
-    Réponse renvoyée par /query
-    """
     reply: str
+
 
 # ===========================================
 # == Endpoint /query                       ==
 # ===========================================
-
 @app.post("/query", response_model=QueryResponse)
 def query_endpoint(req: QueryRequest):
     """
-    Simule une conversation. 
-    Ne fait qu'écho de la question pour le moment.
+    Endpoint simulant une conversation. 
+    Répond juste avec une phrase fictive.
     """
     question = req.question.strip()
-    return QueryResponse(reply=f"Réponse fictive (pas de LLM) à la question '{question}'.")
+    print("\n[DEBUG] /query => question =", question)
+    return QueryResponse(reply=f"Réponse fictive à '{question}'. (Pas de LLM)")
 
 # ===========================================
 # == Endpoint /recommend                   ==
 # ===========================================
-
 @app.post("/recommend", response_model=RecommendResponse)
 def recommend_endpoint(r: RecommendRequest):
     """
-    Reçoit un profil utilisateur, extrait les mots-clés 
-    depuis objective et knowledge, 
-    puis effectue un partial matching dans le DataFrame df_formations.
-    Retourne la première formation qui correspond, sinon un fallback.
+    Reçoit un profil utilisateur, extrait les mots-clés,
+    puis cherche une formation correspondante.
+    Retourne une réponse structurée avec détails séparés.
     """
-    p = r.profile
-    tokens = extract_keywords(p.objective, p.knowledge)
+    print("\n[DEBUG] /recommend => Profil =", r.profile)
 
-    # Filtre des formations
+    tokens = extract_keywords(r.profile.objective, r.profile.knowledge)
     matched_df = partial_match_formations(df_formations, tokens)
 
     if not matched_df.empty:
-        # On prend la première formation matchée, par exemple
         match = matched_df.iloc[0]
+
         titre = match["titre"]
-        reply_message = (
-            f"Formation trouvée: '{titre}'. "
-            f"Objectifs: {match['objectifs']} "
-            f"Prérequis: {match['prerequis']}"
-        )
+        objectifs = match["objectifs"]
+        prerequis = match["prerequis"]
+        programme = match["programme"]
+        lien = match["lien"]
+
         return RecommendResponse(
-            recommended_course=str(titre),
-            reply=reply_message
+            recommended_course=titre,
+            reply=f"Voici une formation qui correspond à votre profil.",
+            details={
+                "objectifs": objectifs,
+                "prerequis": prerequis,
+                "programme": programme,
+                "lien": lien
+            }
         )
     else:
         return RecommendResponse(
             recommended_course="Aucune formation pertinente",
-            reply="Aucune formation ne correspond aux mots-clés fournis (via pandas)."
+            reply="Aucune formation ne correspond aux mots-clés fournis.",
+            details=None
         )
+
