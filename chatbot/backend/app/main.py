@@ -57,10 +57,10 @@ BASE_DIR = CURRENT_FILE.parent  # si main.py est à la racine, c'est suffisant
 # Si main.py est dans 'app/', alors => BASE_DIR = CURRENT_FILE.parent.parent
 # À adapter selon la hiérarchie exacte.
 
-print("[DEBUG] BASE_DIR =", BASE_DIR)
+# print("[DEBUG] BASE_DIR =", BASE_DIR)
 
 DATA_FOLDER = BASE_DIR / "content"
-print("[DEBUG] DATA_FOLDER =", DATA_FOLDER, "| exists?", DATA_FOLDER.exists())
+# print("[DEBUG] DATA_FOLDER =", DATA_FOLDER, "| exists?", DATA_FOLDER.exists())
 
 # ============================================
 # == Chargement des formations en DataFrame ==
@@ -78,9 +78,9 @@ def load_formations_to_df(json_dir: Path) -> pd.DataFrame:
       - lien
     Ajoute des prints pour vérifier le contenu.
     """
-    print("\n[DEBUG] Chargement des formations depuis:", json_dir)
+    # print("\n[DEBUG] Chargement des formations depuis:", json_dir)
     if not json_dir.exists():
-        print("[WARNING] Le dossier n'existe pas. Aucun fichier JSON ne sera chargé.")
+        # print("[WARNING] Le dossier n'existe pas. Aucun fichier JSON ne sera chargé.")
         return pd.DataFrame()
 
     records = []
@@ -99,19 +99,19 @@ def load_formations_to_df(json_dir: Path) -> pd.DataFrame:
                 "public": data.get("public", []),
                 "lien": data.get("lien", "")
             })
-        print("[DEBUG] Fichier chargé avec succès:", file.name)
+        # print("[DEBUG] Fichier chargé avec succès:", file.name)
 
     if nb_files == 0:
-        print("[WARNING] Aucun fichier .json trouvé dans le dossier.")
+        # print("[WARNING] Aucun fichier .json trouvé dans le dossier.")
         return pd.DataFrame()
 
     df = pd.DataFrame(records)
-    print(f"[DEBUG] Nombre de formations chargées: {len(df)}")
+    # print(f"[DEBUG] Nombre de formations chargées: {len(df)}")
     return df
 
 # Chargement effectif
 df_formations = load_formations_to_df(DATA_FOLDER)
-print("\n[DEBUG] df_formations:\n", df_formations)
+# print("\n[DEBUG] df_formations:\n", df_formations)
 
 # ===========================================
 # == Fonctions utilitaires (matching)      ==
@@ -119,30 +119,41 @@ print("\n[DEBUG] df_formations:\n", df_formations)
 
 def extract_keywords(objective: str, knowledge: str) -> List[str]:
     """
-    Transforme l'objectif et les compétences en liste de mots-clés distincts,
-    tout en minuscules et sans doublons.
-    Ex: "Devenir Data Analyst" + "python, sql" => ["devenir", "data", "analyst", "python", "sql"]
-    Avec des prints pour le debug.
+    Nettoie et extrait les mots-clés significatifs à partir 
+    de l’objectif et des compétences, en supprimant les stop words.
     """
-    print("\n[DEBUG] Dans extract_keywords =>")
-    print(" - objective reçu:", objective)
-    print(" - knowledge reçu:", knowledge)
+    # Liste de mots fréquents à ignorer
+    stop_words = {
+        "le", "la", "les", "de", "des", "du", "un", "une", "et", "à", "en", 
+        "au", "aux", "pour", "avec", "dans", "sur", "par", "se", "son", 
+        "sa", "ses", "ce", "cette", "ces", "est", "qui", "que", "dont", 
+        "je", "tu", "il", "elle", "on", "nous", "vous", "ils", "elles"
+    }
 
+    # Mise en minuscules + remplacement des virgules par des espaces
     obj_str = objective.lower().replace(",", " ")
     knw_str = knowledge.lower().replace(",", " ")
 
+    # Tokenisation basique
     obj_tokens = obj_str.split()
     knw_tokens = knw_str.split()
 
-    # Fusion + élimination de doublons
-    all_tokens = obj_tokens + knw_tokens
-    unique_tokens = list(set(t.strip() for t in all_tokens if t.strip()))
+    # Fusion et nettoyage
+    raw_tokens = obj_tokens + knw_tokens
+    cleaned_tokens = [
+        t.strip() for t in raw_tokens if t.strip() and t not in stop_words
+    ]
 
-    print(" - Mots-clés extraits:", unique_tokens)
+    # Suppression des doublons
+    unique_tokens = list(set(cleaned_tokens))
+
+    # print("[DEBUG] Mots-clés nettoyés (sans stop words) :", unique_tokens)
+
     return unique_tokens
 
 
-def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: str, seuil_score: int = 5) -> pd.DataFrame:
+
+def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: str, seuil_score: int) -> pd.DataFrame:
     """
     Filtre et trie les formations en fonction de :
       - correspondances avec les mots-clés
@@ -156,16 +167,16 @@ def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: s
     :return: formations triées par pertinence
 
     Exemple :
-        Les formations trop faibles (score < 2) sont ignorées
+        Les formations trop faibles (score < {seuil}) sont ignorées
         Les débutants sont orientés vers des formations plus accessibles
         Les profils avancés obtiennent des contenus plus techniques 
     """
-    print("\n[DEBUG] partial_match_formations()")
-    print(f"[DEBUG] Niveau utilisateur : {niveau_user}")
-    print(f"[DEBUG] Tokens utilisés : {tokens}")
+    # print("\n[DEBUG] partial_match_formations()")
+    # print(f"[DEBUG] Niveau utilisateur : {niveau_user}")
+    # print(f"[DEBUG] Tokens utilisés : {tokens}")
 
     if df.empty or not tokens:
-        print("[WARNING] DF vide ou aucun token")
+        # print("[WARNING] DF vide ou aucun token")
         return df.iloc[0:0]
 
     df = df.copy()
@@ -182,17 +193,21 @@ def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: s
     # Ajoute une colonne "score" initiale
     def compute_score(row):
         text = row["corpus"]
+        # Compte le nombre de tokens présents dans le texte
         score = sum(1 for t in tokens if t in text)
 
-        # Bonus selon le niveau utilisateur
+        # BONUS SI LE NIVEAU UTILISATEUR CORRESPOND À CELUI DE LA FORMATION
         niveau_formation = row.get("niveau", "").lower()
         prerequis = row.get("prerequis", [])
 
-        # Bonus pour débutant : pas de prérequis ou niveau = débutant
+        # print(f"[DEBUG] Analyse niveau => user: {niveau_user} | formation: {niveau_formation} | prerequis: {prerequis}")
+
         if niveau_user == "débutant":
-            if not prerequis or "débutant" in niveau_formation:
+            # Bonus si la formation est marquée 'débutant' ou n’a aucun prérequis
+            if "débutant" in niveau_formation or not prerequis:
                 score += 2
         elif niveau_user == "avancé":
+            # Bonus uniquement si formation = 'avancé'
             if "avancé" in niveau_formation:
                 score += 1
 
@@ -206,7 +221,7 @@ def partial_match_formations(df: pd.DataFrame, tokens: List[str], niveau_user: s
     # Ne garde que les formations qui dépassent un seuil minimum
     filtered = df[df["score"] >= seuil_score].sort_values(by="score", ascending=False)
 
-    print(f"[DEBUG] Formations retenues après filtrage (seuil={seuil_score}) : {len(filtered)}")
+    # print(f"[DEBUG] Formations retenues après filtrage (seuil={seuil_score}) : {len(filtered)}")
     return filtered
 
 
@@ -273,8 +288,11 @@ def recommend_endpoint(r: RecommendRequest):
     # Récupération du niveau utilisateur en minuscule
     niveau = profile.level.lower().strip()
 
+    # Défiiner le seuil de score minimal
+    seuil = 6
+
     # Matching dans les formations avec score et niveau pris en compte
-    matched_df = partial_match_formations(df_formations, tokens, niveau_user=niveau)
+    matched_df = partial_match_formations(df_formations, tokens, niveau_user=niveau, seuil_score=seuil)
 
 
 
